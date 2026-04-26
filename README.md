@@ -11,7 +11,6 @@ URL: https://adrianagy.github.io/PAD-awareness-dashboard/
 
 ## Source Code:
 Github: https://github.com/AdrianaGY/PAD-awareness-dashboard
-Project 
 
 ## Repository Contents
 - `DATA550_final_AG (V4).Rmd`: Source code for the flexdashboard
