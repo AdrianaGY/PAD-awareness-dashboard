@@ -1,0 +1,279 @@
+---
+title: "Peripheral Artery Disease (PAD) Awareness Dashboard"
+author: "Adriana Gutiérrez"
+date: "`r Sys.Date()`"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    self_contained: true
+    theme:
+      version: 5
+      bootswatch: flatly
+      base_font:
+        google: "Inter"
+      heading_font:
+        google: "Poppins"
+---
+
+### Project URL:
+Dashboard is available at: https://adrianagy.github.io/PAD-awareness-dashboard/ 
+
+GitHub repository: 
+https://github.com/AdrianaGY/PAD-awareness-dashboard 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(survey)
+library(plotly)
+library(DT)
+library(haven)
+
+options(survey.lonely.psu = "adjust")
+
+```
+
+```{r}
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+
+base_dir <- "/Users/adriana/Library/CloudStorage/OneDrive-Emory/0 Emory/Rollins/thesis/Tesis - Rollins/2026 thesis"
+
+df1 <- read_csv(file.path(base_dir, "DATA_pad_awareness.csv"))
+df2 <- read_csv(file.path(base_dir, "part_derv_lad1.csv"))
+
+pad_awareness_data <- df1 %>%
+  left_join(df2 %>% select(PID, PSU_ID, WEIGHT_FINAL_NORM_OVERALL, STRAT),
+            by = "PID")
+
+# -----------------------------
+# CLEAN VARIABLES
+# -----------------------------
+
+pad_awareness_data <- pad_awareness_data %>%
+  mutate(
+    PAD_awareness_num = if_else(PAD_awareness_bin2 == "aware", 1, 0),
+    
+    CLAUDICATION_INT = case_when(
+      CLAUDICATION_INT == "no" ~ "No claudication",
+      CLAUDICATION_INT == "yes" ~ "Claudication",
+      TRUE ~ "Don't know"
+    )
+  )
+
+# -----------------------------
+# SURVEY DESIGN
+# -----------------------------
+
+hchs.dsgn <- svydesign(
+  id = ~PSU_ID,
+  strata = ~STRAT,
+  weights = ~WEIGHT_FINAL_NORM_OVERALL,
+  data = pad_awareness_data,
+  nest = TRUE
+)
+```
+
+# Overview
+
+## Row
+
+### PAD Awareness by Symptom Status
+
+```{r}
+symptom_awareness <- svytable(
+  ~ CLAUDICATION_INT + PAD_awareness_num,
+  hchs.dsgn
+) %>%
+  prop.table(margin = 1) %>%
+  as.data.frame()
+
+colnames(symptom_awareness) <- c("Symptom", "Awareness", "Proportion")
+
+symptom_awareness <- symptom_awareness %>%
+  mutate(
+    Awareness = ifelse(Awareness == 1, "Aware", "Unaware"),
+    Percent = round(Proportion * 100, 1)
+  )
+
+plot_ly(
+  data = symptom_awareness,
+  x = ~Symptom,
+  y = ~Percent,
+  color = ~Awareness,
+  colors = c("#96CDCD", "#E0EEEE"),
+  type = "bar",
+  text = ~paste0(
+    "<b>Symptom:</b> ", Symptom,
+    "<br><b>Awareness:</b> ", Awareness,
+    "<br><b>Participants:</b> ", Percent, "%"
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    barmode = "stack",
+    title = "PAD Awareness Increases with Symptom Presence",
+    yaxis = list(title = "Participants (%)"),
+    xaxis = list(title = "Symptom Category"),
+    margin = list(l = 60, r = 20, t = 60, b = 60)
+  ) %>%
+  config(displayModeBar = TRUE)
+
+```
+
+### PAD Awareness by Country of Origin
+```{r}
+country_awareness <- svyby(
+  ~ PAD_awareness_num,
+  ~ country_recat,
+  hchs.dsgn,
+  svymean,
+  na.rm = TRUE
+)
+
+country_awareness <- country_awareness %>%
+  mutate(Percent = round(PAD_awareness_num * 100, 1))
+
+plot_ly(
+  data = country_awareness,
+  x = ~Percent,
+  y = ~reorder(country_recat, Percent),
+  type = "bar",
+  orientation = "h",
+  text = ~paste0(
+    "<b>Country:</b> ", country_recat,
+    "<br><b>Awareness:</b> ", Percent, "%"
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "Substantial Variation in PAD Awareness by Country of Origin",
+    xaxis = list(title = "Awareness (%)"),
+    yaxis = list(title = ""),
+    margin = list(l = 120, r = 20, t = 60, b = 60)
+  ) %>%
+  config(displayModeBar = TRUE)
+
+```
+
+# Associations
+
+## Row
+
+### Factors Associated with PAD Awareness (Adjusted Model)
+```{r include=FALSE}
+library(stringr)
+library(dplyr)
+
+clean_term_labels <- function(term) {
+  case_when(
+    
+    # ---- RACE ----
+    str_detect(term, "^PIEA6_2") ~ paste0(
+      "Race: ",
+      str_remove(term, "PIEA6_2")
+    ),
+    
+    # ---- COUNTRY ----
+    str_detect(term, "^country_recat") ~ paste0(
+      "Country: ",
+      str_remove(term, "country_recat")
+    ),
+    
+    # ---- CLINICAL ----
+    term == "hypertension_2yes" ~ "History of Hypertension",
+    term == "cholesterolyes" ~ "History of Hypercholesterolemia",
+    term == "diabetesyes" ~ "History of Diabetes",
+    
+    # ---- SYMPTOMS ----
+    term == "CLAUDICATION_INTyes" ~ "Claudication symptoms",
+    term == "CLAUDICATION_INTdont know" ~ "Claudication: don't know",
+    term == "CLAUDICATION_INTNo claudication" ~ "No claudication",
+    
+    # ---- DEFAULT ----
+    TRUE ~ term
+  ) %>%
+    str_replace("_", " ") %>%
+    str_trim()
+}
+```
+
+```{r}
+model <- svyglm(
+  PAD_awareness_num ~ PIEA6_2 + country_recat + hypertension_2 +
+    cholesterol + diabetes + CLAUDICATION_INT,
+  design = hchs.dsgn,
+  family = quasipoisson(link = "log")
+)
+
+library(broom)
+
+forest_df <- tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    label = clean_term_labels(term),
+    estimate = round(estimate, 2),
+    conf.low = round(conf.low, 2),
+    conf.high = round(conf.high, 2)
+  ) %>%
+  filter(
+    !str_detect(label, regex("unknown|don.?t know|DK", ignore_case = TRUE))
+  )
+
+# Interactive Forest Plot
+
+plot_ly(
+  data = forest_df,
+  x = ~estimate,
+  y = ~reorder(label, estimate),
+  type = "scatter",
+  mode = "markers",
+  error_x = list(
+    type = "data",
+    symmetric = FALSE,
+    array = ~conf.high - estimate,
+    arrayminus = ~estimate - conf.low
+  ),
+  marker = list(
+    color = "#2C7FB8",
+    size = 8
+  ),
+  text = ~paste0(
+    "<b>Variable:</b> ", label,
+    "<br><b>PR:</b> ", estimate,
+    "<br><b>95% CI:</b> ", conf.low, " - ", conf.high
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "Factors Associated with PAD Awareness (Adjusted Model)",
+    xaxis = list(
+      title = "Prevalence Ratio",
+      type = "log"
+    ),
+    yaxis = list(title = ""),
+    shapes = list(
+      list(
+        type = "line",
+        x0 = 1, x1 = 1,
+        y0 = -1, y1 = length(forest_df$label),
+        line = list(dash = "dash", color = "gray")
+      )
+    ),
+    margin = list(l = 180, r = 20, t = 60, b = 60)
+  ) %>%
+  config(displayModeBar = TRUE)
+
+```
+
+
+# Data Description
+
+### Dataset Overview
+This dashboard uses data from the Hispanic Community Health Study / Study of Latinos (HCHS-SOL), a population-based cohort of Hispanic/Latino adults in the United States (n ≈ 1,200). Data were collected through standardized interviews and clinical examinations between 2008–2011. The study population includes diverse Hispanic/Latino backgrounds across multiple U.S. communities. Peripheral Artery Disease awareness was self-reported. This dataset is available by request in BioLincc.
+
+### Why this matters
+Low awareness of Peripheral Artery Disease (PAD) limits early detection and increases the risk of preventable cardiovascular complications. This dashboard identifies gaps in awareness across populations to inform targeted public health interventions.
